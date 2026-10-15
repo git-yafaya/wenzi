@@ -1,0 +1,155 @@
+--- a/sherpa-onnx/c-api/c-api.cc
++++ b/sherpa-onnx/c-api/c-api.cc
+@@ -5,6 +5,9 @@
+ #include "sherpa-onnx/c-api/c-api.h"
+ 
+ #include <algorithm>
++#include <cerrno>
++#include <exception>
++#include <new>
+ #include <cstring>
+ #include <memory>
+ #include <sstream>
+@@ -206,7 +209,8 @@
+ }
+ 
+ const SherpaOnnxOnlineRecognizer *SherpaOnnxCreateOnlineRecognizer(
+-    const SherpaOnnxOnlineRecognizerConfig *config) {
++    const SherpaOnnxOnlineRecognizerConfig *config) try {
++  /* 创建异常不能越过 C API 边界。 */
+   sherpa_onnx::OnlineRecognizerConfig recognizer_config =
+       GetOnlineRecognizerConfig(config);
+ 
+@@ -215,12 +219,20 @@
+     return nullptr;
+   }
+ 
+-  SherpaOnnxOnlineRecognizer *recognizer = new SherpaOnnxOnlineRecognizer;
+-
+-  recognizer->impl =
+-      std::make_unique<sherpa_onnx::OnlineRecognizer>(recognizer_config);
+-
+-  return recognizer;
++  return new SherpaOnnxOnlineRecognizer{
++      std::make_unique<sherpa_onnx::OnlineRecognizer>(recognizer_config)};
++} catch (const std::bad_alloc &e) {
++  SHERPA_ONNX_LOGE("创建失败: %s", e.what());
++  errno = ENOMEM;
++  return nullptr;
++} catch (const std::exception &e) {
++  SHERPA_ONNX_LOGE("创建失败: %s", e.what());
++  errno = EINVAL;
++  return nullptr;
++} catch (...) {
++  SHERPA_ONNX_LOGE("创建失败: 未知异常");
++  errno = EIO;
++  return nullptr;
+ }
+ 
+ void SherpaOnnxDestroyOnlineRecognizer(
+@@ -230,11 +242,24 @@
+ }
+ 
+ const SherpaOnnxOnlineStream *SherpaOnnxCreateOnlineStream(
+-    const SherpaOnnxOnlineRecognizer *recognizer) {
++    const SherpaOnnxOnlineRecognizer *recognizer) try {
++  /* 创建异常不能越过 C API 边界。 */
+   if (!recognizer) return nullptr;
+   SherpaOnnxOnlineStream *stream =
+       new SherpaOnnxOnlineStream(recognizer->impl->CreateStream());
+   return stream;
++} catch (const std::bad_alloc &e) {
++  SHERPA_ONNX_LOGE("创建失败: %s", e.what());
++  errno = ENOMEM;
++  return nullptr;
++} catch (const std::exception &e) {
++  SHERPA_ONNX_LOGE("创建失败: %s", e.what());
++  errno = EINVAL;
++  return nullptr;
++} catch (...) {
++  SHERPA_ONNX_LOGE("创建失败: 未知异常");
++  errno = EIO;
++  return nullptr;
+ }
+ 
+ const SherpaOnnxOnlineStream *SherpaOnnxCreateOnlineStreamWithHotwords(
+@@ -2601,7 +2626,8 @@
+ }
+ 
+ const SherpaOnnxOfflinePunctuation *SherpaOnnxCreateOfflinePunctuation(
+-    const SherpaOnnxOfflinePunctuationConfig *config) {
++    const SherpaOnnxOfflinePunctuationConfig *config) try {
++  /* 创建异常不能越过 C API 边界。 */
+   if (config == nullptr) {
+     return nullptr;
+   }
+@@ -2613,10 +2639,20 @@
+     return nullptr;
+   }
+ 
+-  SherpaOnnxOfflinePunctuation *punct = new SherpaOnnxOfflinePunctuation;
+-  punct->impl = std::make_unique<sherpa_onnx::OfflinePunctuation>(c);
+-
+-  return punct;
++  return new SherpaOnnxOfflinePunctuation{
++      std::make_unique<sherpa_onnx::OfflinePunctuation>(c)};
++} catch (const std::bad_alloc &e) {
++  SHERPA_ONNX_LOGE("创建失败: %s", e.what());
++  errno = ENOMEM;
++  return nullptr;
++} catch (const std::exception &e) {
++  SHERPA_ONNX_LOGE("创建失败: %s", e.what());
++  errno = EINVAL;
++  return nullptr;
++} catch (...) {
++  SHERPA_ONNX_LOGE("创建失败: 未知异常");
++  errno = EIO;
++  return nullptr;
+ }
+ 
+ void SherpaOnnxDestroyOfflinePunctuation(
+--- a/sherpa-onnx/csrc/offline-ct-transformer-model.cc
++++ b/sherpa-onnx/csrc/offline-ct-transformer-model.cc
+@@ -6,6 +6,7 @@
+ #include "sherpa-onnx/csrc/macros.h"
+ 
+ #include <memory>
++#include <stdexcept>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -84,6 +85,13 @@
+ 
+     Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
+ 
++    /* 缺少本模型元数据时交给 C API 返回错误。 */
++    for (const char *key : {"tokens", "vocab_size", "punctuations", "unk_symbol"}) {
++      if (LookupCustomModelMetaData(meta_data, key, allocator).empty()) {
++        throw std::runtime_error(std::string("CT-Transformer 缺少元数据: ") + key);
++      }
++    }
++
+     std::vector<std::string> tokens;
+     SHERPA_ONNX_READ_META_DATA_VEC_STRING_SEP(tokens, "tokens", "|");
+ 
+--- a/sherpa-onnx/csrc/online-recognizer-transducer-impl.h
++++ b/sherpa-onnx/csrc/online-recognizer-transducer-impl.h
+@@ -8,6 +8,7 @@
+ #include <algorithm>
+ #include <ios>
+ #include <memory>
++#include <stdexcept>
+ #include <regex>  // NOLINT
+ #include <sstream>
+ #include <string>
+@@ -94,6 +95,10 @@
+         config_(config),
+         model_(OnlineTransducerModel::Create(config.model_config)),
+         endpoint_(config_.endpoint_config) {
++    /* 工厂拒绝模型时不要继续解引用空指针。 */
++    if (!model_) {
++      throw std::runtime_error("无法初始化在线 transducer 模型");
++    }
+     if (!config.model_config.tokens_buf.empty()) {
+       sym_ = SymbolTable(config.model_config.tokens_buf, false);
+     } else {

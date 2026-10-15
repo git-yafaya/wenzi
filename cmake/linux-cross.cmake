@@ -1,0 +1,23 @@
+set(CMAKE_SYSTEM_NAME Linux)
+
+# 参数来自真实 SDK，不在这里假定板卡架构。
+foreach(required CMAKE_SYSTEM_PROCESSOR CMAKE_C_COMPILER CMAKE_SYSROOT)
+    if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
+        message(FATAL_ERROR "交叉编译必须指定 ${required}")
+    endif()
+endforeach()
+if(NOT IS_DIRECTORY "${CMAKE_SYSROOT}")
+    message(FATAL_ERROR "CMAKE_SYSROOT 目录不存在: ${CMAKE_SYSROOT}")
+endif()
+
+set(CMAKE_FIND_ROOT_PATH "${CMAKE_SYSROOT}")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+set(ENV{PKG_CONFIG_SYSROOT_DIR} "${CMAKE_SYSROOT}")
+if("$ENV{PKG_CONFIG_LIBDIR}" STREQUAL "")
+    set(ENV{PKG_CONFIG_LIBDIR}
+        "${CMAKE_SYSROOT}/usr/lib/pkgconfig:${CMAKE_SYSROOT}/usr/share/pkgconfig")
+endif()
+set(ENV{PKG_CONFIG_PATH} "")

@@ -1,0 +1,9 @@
+/.deps/
+/models/
+/build*/
+/install*/
+/samples/*.wav
+/.env
+/AGENTS*
+/需求*
+
